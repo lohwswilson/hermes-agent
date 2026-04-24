@@ -50,7 +50,8 @@ class TestEstimateTokensRough:
         assert estimate_tokens_rough("a" * 400) == 100
 
     def test_short_text(self):
-        assert estimate_tokens_rough("hello") == 1
+        # "hello" = 5 chars → ceil(5/4) = 2
+        assert estimate_tokens_rough("hello") == 2
 
     def test_proportional(self):
         short = estimate_tokens_rough("hello world")
@@ -68,10 +69,11 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([]) == 0
 
     def test_single_message_concrete_value(self):
-        """Verify against known str(msg) length."""
+        """Verify against known str(msg) length (ceiling division)."""
         msg = {"role": "user", "content": "a" * 400}
         result = estimate_messages_tokens_rough([msg])
-        expected = len(str(msg)) // 4
+        n = len(str(msg))
+        expected = (n + 3) // 4
         assert result == expected
 
     def test_multiple_messages_additive(self):
@@ -80,7 +82,8 @@ class TestEstimateMessagesTokensRough:
             {"role": "assistant", "content": "Hi there, how can I help?"},
         ]
         result = estimate_messages_tokens_rough(msgs)
-        expected = sum(len(str(m)) for m in msgs) // 4
+        n = sum(len(str(m)) for m in msgs)
+        expected = (n + 3) // 4
         assert result == expected
 
     def test_tool_call_message(self):
@@ -89,7 +92,7 @@ class TestEstimateMessagesTokensRough:
                "tool_calls": [{"id": "1", "function": {"name": "terminal", "arguments": "{}"}}]}
         result = estimate_messages_tokens_rough([msg])
         assert result > 0
-        assert result == len(str(msg)) // 4
+        assert result == (len(str(msg)) + 3) // 4
 
     def test_message_with_list_content(self):
         """Vision messages with multimodal content arrays."""
@@ -98,7 +101,7 @@ class TestEstimateMessagesTokensRough:
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         ]}
         result = estimate_messages_tokens_rough([msg])
-        assert result == len(str(msg)) // 4
+        assert result == (len(str(msg)) + 3) // 4
 
 
 # =========================================================================
@@ -110,8 +113,10 @@ class TestDefaultContextLengths:
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             if "claude" not in key:
                 continue
-            # Claude 4.6 models have 1M context
-            if "4.6" in key or "4-6" in key:
+            # Claude 4.6+ models (4.6 and 4.7) have 1M context at standard
+            # API pricing (no long-context premium).  Older Claude 4.x and
+            # 3.x models cap at 200k.
+            if any(tag in key for tag in ("4.6", "4-6", "4.7", "4-7")):
                 assert value == 1000000, f"{key} should be 1000000"
             else:
                 assert value == 200000, f"{key} should be 200000"
@@ -380,6 +385,7 @@ class TestStripProviderPrefix:
         assert _strip_provider_prefix("local:my-model") == "my-model"
         assert _strip_provider_prefix("openrouter:anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
         assert _strip_provider_prefix("anthropic:claude-sonnet-4") == "claude-sonnet-4"
+        assert _strip_provider_prefix("stepfun:step-3.5-flash") == "step-3.5-flash"
 
     def test_ollama_model_tag_preserved(self):
         """Ollama model:tag format must NOT be stripped."""
@@ -614,6 +620,10 @@ class TestParseContextLimitFromError:
     def test_lmstudio_format(self):
         msg = "Error: context window of 4096 tokens exceeded"
         assert parse_context_limit_from_error(msg) == 4096
+
+    def test_minimax_delta_only_message_returns_none(self):
+        msg = "invalid params, context window exceeds limit (2013)"
+        assert parse_context_limit_from_error(msg) is None
 
     def test_completely_unrelated_error(self):
         assert parse_context_limit_from_error("Invalid API key") is None
